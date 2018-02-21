@@ -1,80 +1,55 @@
-import requests
-from time import sleep
-import pandas as pd
-# url = "https://api.telegram.org/bot365829974:AAEodCG5bAVy4WQiSkqMF9wE8ReigNakEj0/"
-token = '365829974:AAEodCG5bAVy4WQiSkqMF9wE8ReigNakEj0'
- 
-import requests  
-import datetime
- 
-class BotHandler:
-    def __init__(self, token):
-        self.token = token
-        self.api_url = "https://api.telegram.org/bot{}/".format(token)
- 
-    def get_updates(self, offset = None, timeout = 30):
-        method = 'getUpdates'
-        params = {'timeout': timeout, 'offset': offset}
-        resp = requests.get(self.api_url + method, params)
-        result_json = resp.json()['result']
-        return result_json
- 
-    def send_message(self, chat_id, text):
-        params = {'chat_id': chat_id, 'text': text}
-        method = 'sendMessage'
-        resp = requests.post(self.api_url + method, params)
-        return resp
- 
-    def get_last_update(self):
-        get_result = self.get_updates()
- 
-        if len(get_result) > 0:
-            last_update = get_result[-1]
+
+import telebot
+import cherrypy
+
+from lesson_04 import config
+
+WEBHOOK_HOST = 'ip/host where the bot is running'
+WEBHOOK_PORT = 443  # 443, 80, 88 или 8443 (порт должен быть открыт!)
+WEBHOOK_LISTEN = '0.0.0.0'  # На некоторых серверах придется указывать такой же IP, что и выше
+
+WEBHOOK_SSL_CERT = './webhook_cert.pem'  # Путь к сертификату
+WEBHOOK_SSL_PRIV = './webhook_pkey.pem'  # Путь к приватному ключу
+
+WEBHOOK_URL_BASE = "https://%s:%s" % (WEBHOOK_HOST, WEBHOOK_PORT)
+WEBHOOK_URL_PATH = "/%s/" % config.token
+
+bot = telebot.TeleBot(config.token)
+
+
+# Наш вебхук-сервер
+class WebhookServer(object):
+    @cherrypy.expose
+    def index(self):
+        if 'content-length' in cherrypy.request.headers and \
+                        'content-type' in cherrypy.request.headers and \
+                        cherrypy.request.headers['content-type'] == 'application/json':
+            length = int(cherrypy.request.headers['content-length'])
+            json_string = cherrypy.request.body.read(length).decode("utf-8")
+            update = telebot.types.Update.de_json(json_string)
+            # Эта функция обеспечивает проверку входящего сообщения
+            bot.process_new_updates([update])
+            return ''
         else:
-            last_update = get_result[len(get_result)]
- 
-        return last_update
+            raise cherrypy.HTTPError(403)
 
 
-greet_bot = BotHandler(token)  
-greetings = ('здравствуй', 'привет', 'ку', 'здорово','сап')  
-now = datetime.datetime.now()
- 
-def main():  
-    new_offset = None
-    today = now.day
-    hour = now.hour
- 
-    while True:
-        greet_bot.get_updates(new_offset)
- 
-        last_update = greet_bot.get_last_update()
- 
-        last_update_id = last_update['update_id']
-        last_chat_text = last_update['message']['text']
-        last_chat_id = last_update['message']['chat']['id']
-        last_chat_name = last_update['message']['chat']['first_name']
- 
-        if last_chat_text.lower() in greetings and today == now.day and 6 <= hour < 12:
-            greet_bot.send_message(last_chat_id, 'Доброе утро, {}'.format(last_chat_name))
-            today += 1
- 
-        elif last_chat_text.lower() in greetings and today == now.day and 12 <= hour < 17:
-            greet_bot.send_message(last_chat_id, 'Добрый день, {}'.format(last_chat_name))
-            today += 1
+# Хэндлер на все текстовые сообщения
+@bot.message_handler(func=lambda message: True, content_types=['text'])
+def echo_message(message):
+    bot.reply_to(message, message.text)
 
-        elif last_chat_text.lower() == 'приветик':
-            greet_bot.send_message(last_chat_id, 'Добрый день, ты лось, {}'.format(last_chat_name))
-            today += 1
- 
-        elif last_chat_text.lower() in greetings and today == now.day and 17 <= hour < 23:
-            greet_bot.send_message(last_chat_id, 'Добрый вечер, {}'.format(last_chat_name))
-            today += 1
- 
-        new_offset = last_update_id + 1
 
-if __name__ == '__main__':  
-    try:
-        main()
-    except KeyboardInterrupt:
-        exit()
+bot.remove_webhook()
+
+bot.set_webhook(url=WEBHOOK_URL_BASE + WEBHOOK_URL_PATH, certificate=open(WEBHOOK_SSL_CERT, 'r'))
+
+cherrypy.config.update({
+    'server.socket_host': WEBHOOK_LISTEN,
+    'server.socket_port': WEBHOOK_PORT,
+    'server.ssl_module': 'builtin',
+    'server.ssl_certificate': WEBHOOK_SSL_CERT,
+    'server.ssl_private_key': WEBHOOK_SSL_PRIV
+})
+
+cherrypy.quickstart(WebhookServer(), WEBHOOK_URL_PATH, {'/': {}})
